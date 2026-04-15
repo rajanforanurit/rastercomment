@@ -52,7 +52,6 @@ def generate_comment():
             if model is not None and encoders:
                 X = pd.DataFrame([features])
                 
-                # === SAFE ENCODING ===
                 categorical_cols = encoders.get('categorical_cols', [])
                 for col in categorical_cols:
                     if col in X.columns:
@@ -63,7 +62,6 @@ def generate_comment():
                         else:
                             X[col] = -1
                 
-                # Convert only numeric columns to float (exclude encoded categoricals)
                 for col in X.columns:
                     if col not in categorical_cols:
                         X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0)
@@ -72,9 +70,9 @@ def generate_comment():
                 confidence = float(np.max(model.predict_proba(X)[0]))
             else:
                 severity_pred = "MEDIUM"
-                confidence = 0.70
+                confidence = 0.75
 
-            comment, explanation, alternatives = generate_comment_text(row, severity_pred, features)
+            comment, explanation, alternatives = generate_sophisticated_comment(row, severity_pred, features)
 
             result = {
                 "comment": comment,
@@ -88,13 +86,13 @@ def generate_comment():
             results.append(result)
 
         except Exception as e:
-            print(f"ERROR processing row: {str(e)}")   # This will show in Render logs
+            print(f"ERROR: {str(e)}")
             results.append({
                 "comment": "Unable to generate detailed comment at this time.",
                 "confidence": 0.6,
-                "explanation": f"Processing error: {str(e)[:150]}",
+                "explanation": f"Processing error: {str(e)[:100]}",
                 "severity": "MEDIUM",
-                "alternatives": ["Please ensure 'amount' is a number"],
+                "alternatives": ["Please ensure 'amount' is numeric"],
                 "rich_mode": rich_mode,
                 "timestamp": datetime.now().isoformat()
             })
@@ -102,24 +100,45 @@ def generate_comment():
     return jsonify(results[0] if len(results) == 1 else results)
 
 
-def generate_comment_text(row, severity, features):
+def generate_sophisticated_comment(row, severity, features):
     try:
         amount = float(row.get('amount', 0))
     except:
-        amount = 0
+        amount = 0.0
     
-    gl = str(row.get('gl_account', 'Unknown Account'))
+    gl_account = str(row.get('gl_account', 'Unknown Account')).strip()
     
+    # Get rich description from dictionary if available
+    measure_info = measure_dict.get(gl_account, {}) if measure_dict else {}
+    description = measure_info.get('description', '') or gl_account
+    table_name = measure_info.get('table', 'Unknown')
+    
+    # Smart comment generation
     if severity == "CRITICAL":
-        comment = f"**CRITICAL**: Significant loss of ${abs(amount):,.0f} detected in {gl}. Immediate review required."
+        if amount < 0:
+            comment = f"**CRITICAL ALERT**: Significant loss of ${abs(amount):,.0f} detected in **{gl_account}** ({description}). Immediate investigation required."
+        else:
+            comment = f"**CRITICAL**: Unusual high positive variance of ${amount:,.0f} in **{gl_account}**. Verify data integrity."
     elif severity == "HIGH":
-        comment = f"High priority variance of ${amount:,.0f} observed in {gl}."
+        direction = "loss" if amount < 0 else "gain"
+        comment = f"**High Priority**: Notable {direction} of ${abs(amount):,.0f} observed in **{gl_account}** ({description}). Recommend detailed review."
     else:
-        comment = f"Moderate activity recorded in {gl} (${amount:,.0f})."
+        comment = f"Moderate activity of ${amount:,.0f} recorded in **{gl_account}** ({description})."
     
-    explanation = f"Amount: ${amount:,.0f} | Category: {features.get('category_type', 'other')}"
+    explanation = f"Amount: ${amount:,.0f} | Category: {features.get('category_type', 'other').capitalize()} | Table: {table_name}"
     
-    return comment, explanation, ["Review trend over last 3 periods", "Cross-check with related accounts"]
+    alternatives = [
+        "Review this metric over the last 3 periods for trends",
+        "Cross-reference with related measures (e.g., Gross Rent vs Effective Rent)",
+        "Check for recent concessions, discounts, or adjustments"
+    ]
+    
+    if "Rent" in gl_account:
+        alternatives.append("Validate lease terms and concession amortization")
+    elif "Concession" in gl_account:
+        alternatives.append("Review impact on Effective Rent calculations")
+    
+    return comment, explanation, alternatives
 
 
 @app.route('/health', methods=['GET'])
