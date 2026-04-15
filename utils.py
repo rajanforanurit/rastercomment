@@ -1,102 +1,123 @@
-# comment-service/utils.py
 import pandas as pd
 import numpy as np
 import os
 import random
+from datetime import datetime
 
-def load_dictionaries():
-    """Load both Excel data dictionaries"""
+def load_dictionaries(silent=False):
+    """Load REBA Data Dictionaries for rich commenting"""
     measures_path = 'Data Dictionary - Measures.xlsx'
     attrs_path = 'Data Dictionary - Attributes.xlsx'
     
-    measure_df = pd.read_excel(measures_path, sheet_name=0, header=1)
-    attr_df = pd.read_excel(attrs_path, sheet_name=0, header=1)
-    
-    # Extract useful mappings (dynamic, no hardcoding)
     measure_dict = {}
-    for _, row in measure_df.iterrows():
-        if pd.notna(row.get('Measure Name')):
-            measure_dict[row['Measure Name']] = {
-                'description': row.get('Description', ''),
-                'formula': row.get('Formula', ''),
-                'table': row.get('Table Name', '')
-            }
-    
     attr_dict = {}
-    for _, row in attr_df.iterrows():
-        if pd.notna(row.get('Attribute Name')):
-            attr_dict[row['Attribute Name']] = {
-                'description': row.get('Description', ''),
-                'table': row.get('Connected Fact Tables', '')
-            }
+    rich_mode = False
     
-    return measure_dict, attr_dict
+    if os.path.exists(measures_path) and os.path.exists(attrs_path):
+        try:
+            measure_df = pd.read_excel(measures_path, sheet_name=0, header=1)
+            attr_df = pd.read_excel(attrs_path, sheet_name=0, header=1)
+            
+            for _, row in measure_df.iterrows():
+                if pd.notna(row.get('Measure Name')):
+                    measure_dict[str(row['Measure Name']).strip()] = {
+                        'description': str(row.get('Description', '')),
+                        'formula': str(row.get('Formula', '')),
+                        'table': str(row.get('Table Name', ''))
+                    }
+            
+            for _, row in attr_df.iterrows():
+                if pd.notna(row.get('Attribute Name')):
+                    attr_dict[str(row['Attribute Name']).strip()] = {
+                        'description': str(row.get('Description', '')),
+                        'table': str(row.get('Connected Fact Tables', ''))
+                    }
+            
+            rich_mode = True
+            if not silent:
+                print(f"✅ RICH MODE ACTIVATED: Loaded {len(measure_dict)} measures and {len(attr_dict)} attributes from REBA dictionaries.")
+                
+        except Exception as e:
+            if not silent:
+                print(f"⚠️ Failed to parse Excel files: {e}. Falling back to safe mode.")
+    else:
+        if not silent:
+            print("⚠️ REBA Data Dictionary files not found. Running in SAFE FALLBACK mode.")
+            print("   Place both Excel files in the project root for richer comments.")
+    
+    return measure_dict, attr_dict, rich_mode
 
-def get_category_type(gl_account, measure_dict):
-    """Dynamic category inference from dictionary"""
+
+def get_category_from_dict(gl_account, measure_dict):
+    """Use dictionary for refined category detection"""
+    if not measure_dict:
+        return get_simple_category_fallback(gl_account)
+    
     gl_lower = str(gl_account).lower()
-    if any(word in gl_lower for word in ['revenue', 'income', 'rent', 'sales']):
+    for measure_name, info in measure_dict.items():
+        if gl_lower in measure_name.lower() or gl_lower in info['description'].lower():
+            desc_lower = info['description'].lower()
+            if any(word in desc_lower for word in ['rent', 'revenue', 'income']):
+                return 'revenue'
+            elif any(word in desc_lower for word in ['concession', 'discount', 'expense', 'cost']):
+                return 'expense'
+            elif 'profit' in desc_lower:
+                return 'profit'
+    return get_simple_category_fallback(gl_account)
+
+
+def get_simple_category_fallback(gl_account):
+    gl_lower = str(gl_account).lower()
+    if any(x in gl_lower for x in ['rent', 'revenue', 'income', 'sales', 'effective rent', 'gross rent']):
         return 'revenue'
-    elif any(word in gl_lower for word in ['expense', 'cost', 'payroll', 'maintenance']):
+    elif any(x in gl_lower for x in ['expense', 'cost', 'payroll', 'maintenance', 'utility', 'concession']):
         return 'expense'
-    elif any(word in gl_lower for word in ['profit', 'margin', 'net']):
+    elif any(x in gl_lower for x in ['profit', 'margin', 'net']):
         return 'profit'
-    elif 'loss' in gl_lower or 'write' in gl_lower:
-        return 'loss'
     return 'other'
 
-def engineer_features(row, measure_dict, attr_dict, metadata):
-    """Feature engineering - production ready"""
+
+def engineer_features(row, measure_dict, attr_dict, rich_mode):
     amount = float(row.get('amount', 0))
     gl = str(row.get('gl_account', 'Unknown'))
+    
+    category = get_category_from_dict(gl, measure_dict) if rich_mode else get_simple_category_fallback(gl)
     
     features = {
         'abs_amount': abs(amount),
         'is_loss': 1 if amount < 0 else 0,
         'amount_sign': np.sign(amount),
-        'log_amount': np.log1p(abs(amount)),
-        'category_type': get_category_type(gl, measure_dict),
+        'log_amount': np.log1p(abs(amount) + 1),
+        'category_type': category,
         'gl_length': len(gl),
-        'is_high_value': 1 if abs(amount) > 50000 else 0,
-        'is_low_value': 1 if abs(amount) < 1000 else 0,
+        'is_high_value': 1 if abs(amount) > 75000 else 0,
+        'is_low_value': 1 if abs(amount) < 5000 else 0,
+        'deviation_from_mean': random.uniform(-2.5, 2.5),
+        'z_score': random.uniform(-3.5, 3.5),
+        'rolling_trend': random.choice([-1, 0, 1]),
     }
-    
-    # Add dummy deviation (in real system, compute from historical)
-    features['deviation_from_mean'] = random.uniform(-2, 2)
-    features['z_score'] = random.uniform(-3, 3)
-    
-    # Rolling trend simulation
-    features['rolling_trend'] = random.choice([-1, 0, 1])
-    
     return features
 
-def generate_synthetic_data(n=10000):
-    """Generate synthetic training data"""
+
+def generate_synthetic_data(n=12000, measure_dict=None, rich_mode=False):
     np.random.seed(42)
     data = []
-    
-    gl_accounts = ["Rent Revenue", "Maintenance Expense", "Payroll", "Utilities", 
-                   "Marketing", "Property Tax", "Insurance", "Unknown GL"]
+    gl_accounts = ["Effective Rent", "Gross Rent", "Lease Concession", "Maintenance Expense", 
+                   "Payroll Expense", "Marketing Cost", "Property Tax", "Insurance", "Unknown GL"]
     
     for _ in range(n):
         gl = np.random.choice(gl_accounts)
-        amount = np.random.normal(0, 50000)
-        if "Expense" in gl or "Tax" in gl or "Insurance" in gl:
-            amount = abs(amount) * -1  # bias to loss/expense
+        amount = np.random.normal(0, 60000)
+        if "Expense" in gl or "Tax" in gl or "Insurance" in gl or "Concession" in gl:
+            amount = -abs(amount) * random.uniform(0.8, 1.5)
         
-        row = {
-            'gl_account': gl,
-            'amount': amount,
-            'status': 'Loss' if amount < 0 else 'Profit'
-        }
+        row = {'gl_account': gl, 'amount': round(amount, 2)}
         data.append(row)
     
     df = pd.DataFrame(data)
-    # Add target for training (severity)
-    df['severity'] = df['amount'].apply(lambda x: 
-        'CRITICAL' if x < -80000 else
-        'HIGH' if x < 0 else
-        'HIGH' if x > 120000 else
-        'MEDIUM' if abs(x) > 10000 else 'LOW'
-    )
+    df['severity'] = df.apply(lambda x: 
+        'CRITICAL' if x['amount'] < -100000 else
+        'HIGH' if x['amount'] < -20000 else
+        'HIGH' if x['amount'] > 150000 else
+        'MEDIUM' if abs(x['amount']) > 30000 else 'LOW', axis=1)
     return df
