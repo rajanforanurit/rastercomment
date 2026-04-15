@@ -1,4 +1,3 @@
-# comment-service/app.py
 from flask import Flask, request, jsonify
 import pandas as pd
 import numpy as np
@@ -12,7 +11,6 @@ from utils import load_dictionaries, engineer_features
 
 app = Flask(__name__)
 
-# Global variables
 model = None
 encoders = None
 metadata = None
@@ -28,9 +26,9 @@ def load_model_and_dictionaries():
         model = joblib.load('models/comment_model.pkl')
         encoders = joblib.load('models/encoders.pkl') if os.path.exists('models/encoders.pkl') else {}
         metadata = joblib.load('models/metadata.pkl') if os.path.exists('models/metadata.pkl') else {}
-        print(f"✅ Model loaded | Rich Mode: {'Yes' if rich_mode else 'No'}")
+        print(f"✅ Model loaded successfully | Rich Mode: {'Yes' if rich_mode else 'No'}")
     else:
-        print("⚠️ Model not found. Run 'python train.py' locally.")
+        print("⚠️ Model not found.")
 
 load_model_and_dictionaries()
 
@@ -44,20 +42,17 @@ def generate_comment():
     if not data:
         return jsonify({"error": "No data provided"}), 400
 
-    # Support both single object and array
     inputs = data if isinstance(data, list) else [data]
     results = []
 
     for row in inputs:
         try:
-            # Engineer features safely
             features = engineer_features(row, measure_dict, attr_dict, rich_mode)
 
             if model is not None and encoders:
-                # Convert to DataFrame and ensure correct types
                 X = pd.DataFrame([features])
                 
-                # Safe encoding for categorical columns
+                # Safely encode categorical columns
                 for col in encoders.get('categorical_cols', []):
                     if col in X.columns:
                         le = encoders[col]
@@ -65,14 +60,14 @@ def generate_comment():
                         if val in le.classes_:
                             X[col] = le.transform([val])[0]
                         else:
-                            X[col] = -1  # unknown category
+                            X[col] = -1   # unknown
 
-                # Ensure all columns are numeric
-                X = X.astype(float)
+                # Convert ONLY numeric columns to float (skip encoded categoricals safely)
+                numeric_cols = [c for c in X.columns if c != 'category_type']
+                X[numeric_cols] = X[numeric_cols].astype(float)
 
                 severity_pred = model.predict(X)[0]
-                proba = model.predict_proba(X)[0]
-                confidence = float(np.max(proba))
+                confidence = float(np.max(model.predict_proba(X)[0]))
             else:
                 severity_pred = "MEDIUM"
                 confidence = 0.70
@@ -88,17 +83,16 @@ def generate_comment():
                 "rich_mode": rich_mode,
                 "timestamp": datetime.now().isoformat()
             }
-
             results.append(result)
 
         except Exception as e:
-            print(f"Error processing row: {e}")   # Log for debugging
+            print(f"Error: {str(e)}")  # For Render logs
             results.append({
                 "comment": "Unable to generate detailed comment at this time.",
                 "confidence": 0.6,
-                "explanation": f"Processing error: {str(e)[:100]}",
+                "explanation": f"Processing error: {str(e)[:120]}",
                 "severity": "MEDIUM",
-                "alternatives": ["Please check the input data format"],
+                "alternatives": ["Please try with numeric 'amount' and string 'gl_account'"],
                 "rich_mode": rich_mode,
                 "timestamp": datetime.now().isoformat()
             })
@@ -110,28 +104,16 @@ def generate_comment_text(row, severity, features):
     amount = float(row.get('amount', 0))
     gl = str(row.get('gl_account', 'Unknown Account'))
     
-    templates = {
-        "CRITICAL": [
-            f"**CRITICAL**: Significant loss of ${abs(amount):,.0f} detected in {gl}. Immediate review required.",
-            f"ALERT: Major negative impact found in account {gl}."
-        ],
-        "HIGH": [
-            f"High priority variance of ${amount:,.0f} observed in {gl}.",
-            f"Notable financial movement detected in {gl} — recommend review."
-        ],
-        "MEDIUM": [
-            f"Moderate activity recorded in {gl} (${amount:,.0f}).",
-            f"Stable performance noted for account {gl}."
-        ],
-        "LOW": [
-            f"Low value transaction recorded in {gl}."
-        ]
-    }
+    if severity == "CRITICAL":
+        comment = f"**CRITICAL**: Significant loss of ${abs(amount):,.0f} detected in {gl}. Immediate review required."
+    elif severity == "HIGH":
+        comment = f"High priority variance of ${amount:,.0f} observed in {gl}."
+    else:
+        comment = f"Moderate activity recorded in {gl} (${amount:,.0f})."
     
-    comment = np.random.choice(templates.get(severity, templates["MEDIUM"]))
-    explanation = f"Amount: ${amount:,.0f} | Category: {features.get('category_type', 'other')} | Rich Mode: {rich_mode}"
+    explanation = f"Amount: ${amount:,.0f} | Category: {features.get('category_type', 'other')} | Rich Mode Active"
     
-    return comment, explanation, ["Review recent trends", "Cross-check with related accounts"]
+    return comment, explanation, ["Review trend over last 3 periods", "Cross-check with related accounts"]
 
 
 @app.route('/health', methods=['GET'])
