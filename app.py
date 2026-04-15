@@ -1,3 +1,4 @@
+# app.py - Final Safe Version
 from flask import Flask, request, jsonify
 import pandas as pd
 import numpy as np
@@ -26,7 +27,7 @@ def load_model_and_dictionaries():
         model = joblib.load('models/comment_model.pkl')
         encoders = joblib.load('models/encoders.pkl') if os.path.exists('models/encoders.pkl') else {}
         metadata = joblib.load('models/metadata.pkl') if os.path.exists('models/metadata.pkl') else {}
-        print(f"✅ Model loaded successfully | Rich Mode: {'Yes' if rich_mode else 'No'}")
+        print(f"✅ Model loaded | Rich Mode: {'Yes' if rich_mode else 'No'}")
     else:
         print("⚠️ Model not found.")
 
@@ -52,20 +53,22 @@ def generate_comment():
             if model is not None and encoders:
                 X = pd.DataFrame([features])
                 
-                # Safely encode categorical columns
-                for col in encoders.get('categorical_cols', []):
+                # === SAFE ENCODING ===
+                categorical_cols = encoders.get('categorical_cols', [])
+                for col in categorical_cols:
                     if col in X.columns:
                         le = encoders[col]
                         val = str(X[col].iloc[0])
                         if val in le.classes_:
                             X[col] = le.transform([val])[0]
                         else:
-                            X[col] = -1   # unknown
-
-                # Convert ONLY numeric columns to float (skip encoded categoricals safely)
-                numeric_cols = [c for c in X.columns if c != 'category_type']
-                X[numeric_cols] = X[numeric_cols].astype(float)
-
+                            X[col] = -1
+                
+                # Convert only numeric columns to float (exclude encoded categoricals)
+                for col in X.columns:
+                    if col not in categorical_cols:
+                        X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0)
+                
                 severity_pred = model.predict(X)[0]
                 confidence = float(np.max(model.predict_proba(X)[0]))
             else:
@@ -86,13 +89,13 @@ def generate_comment():
             results.append(result)
 
         except Exception as e:
-            print(f"Error: {str(e)}")  # For Render logs
+            print(f"ERROR processing row: {str(e)}")   # This will show in Render logs
             results.append({
                 "comment": "Unable to generate detailed comment at this time.",
                 "confidence": 0.6,
-                "explanation": f"Processing error: {str(e)[:120]}",
+                "explanation": f"Processing error: {str(e)[:150]}",
                 "severity": "MEDIUM",
-                "alternatives": ["Please try with numeric 'amount' and string 'gl_account'"],
+                "alternatives": ["Please ensure 'amount' is a number"],
                 "rich_mode": rich_mode,
                 "timestamp": datetime.now().isoformat()
             })
@@ -101,7 +104,11 @@ def generate_comment():
 
 
 def generate_comment_text(row, severity, features):
-    amount = float(row.get('amount', 0))
+    try:
+        amount = float(row.get('amount', 0))
+    except:
+        amount = 0
+    
     gl = str(row.get('gl_account', 'Unknown Account'))
     
     if severity == "CRITICAL":
@@ -111,7 +118,7 @@ def generate_comment_text(row, severity, features):
     else:
         comment = f"Moderate activity recorded in {gl} (${amount:,.0f})."
     
-    explanation = f"Amount: ${amount:,.0f} | Category: {features.get('category_type', 'other')} | Rich Mode Active"
+    explanation = f"Amount: ${amount:,.0f} | Category: {features.get('category_type', 'other')}"
     
     return comment, explanation, ["Review trend over last 3 periods", "Cross-check with related accounts"]
 
