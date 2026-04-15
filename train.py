@@ -5,6 +5,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 import joblib
 import os
+from datetime import datetime 
 
 def train_model():
     print("=== Starting Training with REBA Dictionaries ===")
@@ -34,8 +35,13 @@ def train_model():
     
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
-    model = RandomForestClassifier(n_estimators=300, max_depth=18, min_samples_leaf=2, 
-                                  random_state=42, n_jobs=-1)
+    model = RandomForestClassifier(
+        n_estimators=300, 
+        max_depth=18, 
+        min_samples_leaf=2, 
+        random_state=42, 
+        n_jobs=-1
+    )
     model.fit(X_train, y_train)
     
     accuracy = model.score(X_test, y_test)
@@ -43,6 +49,7 @@ def train_model():
     print(f"   Rich Mode during training: {'Yes' if rich_mode else 'No'}")
     
     os.makedirs('models', exist_ok=True)
+    
     joblib.dump(model, 'models/comment_model.pkl')
     joblib.dump(encoders, 'models/encoders.pkl')
     joblib.dump({
@@ -52,7 +59,8 @@ def train_model():
         'training_date': datetime.now().isoformat()
     }, 'models/metadata.pkl')
     
-    print("✅ Model and metadata saved to /models")
+    print("✅ Model and metadata saved to /models folder")
+    print("You can now deploy or restart your service.")
 
 if __name__ == "__main__":
     train_model()
